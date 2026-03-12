@@ -1,0 +1,16 @@
+# Environments
+rag-agent/venv/
+rag-agent/.env
+
+# Node
+rag-agent/node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Database / local state
+rag-agent/supabase/.temp/
+.vscode/
