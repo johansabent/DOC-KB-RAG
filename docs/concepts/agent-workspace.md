@@ -30,8 +30,10 @@ inside a sandbox workspace under `~/.openclaw/sandboxes`, not your host workspac
 
 ```json5
 {
-  agent: {
-    workspace: "~/.openclaw/workspace",
+  agents: {
+    defaults: {
+      workspace: "~/.openclaw/workspace",
+    },
   },
 }
 ```

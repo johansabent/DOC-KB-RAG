@@ -59,11 +59,19 @@ application root and contains the local `.env`, `venv`, and Supabase config.
 
 From `rag-agent/`:
 
+**On Linux/macOS:**
+
+```bash
+source venv/bin/activate
+```
+
+**On Windows (Git Bash):**
+
 ```bash
 source venv/Scripts/activate
 ```
 
-PowerShell:
+**On Windows (PowerShell):**
 
 ```powershell
 .\venv\Scripts\Activate.ps1
