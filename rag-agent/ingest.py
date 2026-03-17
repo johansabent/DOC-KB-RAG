@@ -3,8 +3,10 @@ import logging
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
-from llama_index.core import SimpleDirectoryReader, StorageContext, VectorStoreIndex, Settings
-from llama_index.core.node_parser import SentenceSplitter
+from llama_index.core import SimpleDirectoryReader, Settings
+from llama_index.core.ingestion import IngestionPipeline
+from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
+from llama_index.core.storage.docstore import SimpleDocumentStore
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 from llama_index.vector_stores.supabase import SupabaseVectorStore
 
@@ -19,6 +21,8 @@ logging.basicConfig(
 
 # Security: Deny-list of dangerous root paths that should never be ingested.
 DENIED_ROOTS = {Path(p).resolve() for p in ["/", "C:\\", "C:\\Windows", "C:\\Users"]}
+
+DOCSTORE_PATH = Path(__file__).parent / "docstore.json"
 
 
 def _validate_docs_path(raw_path: str | None) -> Path:
@@ -38,6 +42,14 @@ def _validate_docs_path(raw_path: str | None) -> Path:
         )
 
     return resolved
+
+
+def _load_docstore() -> SimpleDocumentStore:
+    if DOCSTORE_PATH.exists():
+        log.info("Loading existing docstore from %s ...", DOCSTORE_PATH)
+        return SimpleDocumentStore.from_persist_path(str(DOCSTORE_PATH))
+    log.info("No existing docstore found — starting fresh.")
+    return SimpleDocumentStore()
 
 
 def ingest():
@@ -70,8 +82,6 @@ def ingest():
         dimension=dimensions,
     )
 
-    storage_context = StorageContext.from_defaults(vector_store=vector_store)
-
     log.info("Loading documents from %s ...", docs_path)
     reader = SimpleDirectoryReader(
         input_dir=str(docs_path),
@@ -81,22 +91,28 @@ def ingest():
     documents = reader.load_data()
     log.info("Loaded %d document sections.", len(documents))
 
-    splitter = SentenceSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    docstore = _load_docstore()
+
+    pipeline = IngestionPipeline(
+        transformations=[
+            MarkdownNodeParser(),
+            SentenceSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap),
+            embed_model,
+        ],
+        vector_store=vector_store,
+        docstore=docstore,
+        docstore_strategy="upserts_and_delete",
+    )
 
     log.info(
-        "Generating embeddings using %s (chunk_size=%d, overlap=%d) ...",
-        embed_model_name, chunk_size, chunk_overlap,
+        "Running ingestion pipeline (chunk_size=%d, overlap=%d) ...",
+        chunk_size, chunk_overlap,
     )
 
     try:
-        VectorStoreIndex.from_documents(
-            documents,
-            transformations=[splitter],
-            storage_context=storage_context,
-            embed_model=embed_model,
-            show_progress=True,
-        )
-        log.info("Ingestion complete. Everything is indexed in Supabase.")
+        nodes = pipeline.run(documents=documents, show_progress=True)
+        docstore.persist(str(DOCSTORE_PATH))
+        log.info("Ingestion complete. %d new/changed node(s) embedded.", len(nodes))
     except Exception as e:
         log.exception("Ingestion failed: %s", e)
 
