@@ -8,13 +8,16 @@ documentation corpus in one place.
 
 - `rag-agent/` contains the runnable RAG app.
 - `docs/` is the documentation corpus currently being indexed.
+- `.agent/` provides agent personas, skills, and workflows for coordinating
+  multi-agent development work. See `.agent/ARCHITECTURE.md`.
 - Root-level files such as `AGENTS.md`, `GEMINI.md`, and `CHANGELOG.md` are
-  project guidance and reference material.
+  project guidance and imported reference material.
 
 ## Structure Map
 
 ```text
 DOC-KB-RAG/
+|-- .agent/                  # Agent coordination framework (see ARCHITECTURE.md)
 |-- AGENTS.md                # Local agent instructions for this repo
 |-- CHANGELOG.md             # Imported/source project changelog
 |-- GEMINI.md                # Gemini-specific project context
