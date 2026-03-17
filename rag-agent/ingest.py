@@ -1,3 +1,4 @@
+import json
 import os
 import logging
 import sys
@@ -47,7 +48,7 @@ def _load_docstore(path: Path) -> SimpleDocumentStore:
         try:
             log.info("Loading existing docstore from %s ...", path)
             return SimpleDocumentStore.from_persist_path(str(path))
-        except Exception:
+        except (json.JSONDecodeError, KeyError):
             log.warning("Docstore at %s is corrupted — starting fresh.", path)
     else:
         log.info("No existing docstore found — starting fresh.")
@@ -125,7 +126,7 @@ def ingest():
 
     try:
         docstore.persist(str(docstore_path))
-    except Exception as e:
+    except IOError as e:
         log.exception("Failed to persist docstore to %s: %s", docstore_path, e)
         return
 
