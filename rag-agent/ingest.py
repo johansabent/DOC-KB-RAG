@@ -120,15 +120,15 @@ def ingest():
 
     try:
         nodes = pipeline.run(documents=documents, show_progress=True)
-    except Exception as e:
-        log.exception("Ingestion failed: %s", e)
-        return
+    except Exception:
+        log.exception("Ingestion failed")
+        sys.exit(1)
 
     try:
         docstore.persist(str(docstore_path))
-    except IOError as e:
-        log.exception("Failed to persist docstore to %s: %s", docstore_path, e)
-        return
+    except IOError:
+        log.exception("Failed to persist docstore to %s", docstore_path)
+        sys.exit(1)
 
     log.info("Ingestion complete. %d new/changed node(s) embedded.", len(nodes))
 
