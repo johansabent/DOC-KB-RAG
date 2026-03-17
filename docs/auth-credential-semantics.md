@@ -1,3 +1,10 @@
+---
+summary: "Credential eligibility and resolution rules used across auth, models probe, and doctor-auth"
+read_when:
+  - You are debugging why a credential profile is rejected at selection time
+  - You are implementing or reviewing auth resolution logic
+---
+
 # Auth Credential Semantics
 
 This document defines the canonical credential eligibility and resolution semantics used across:

@@ -12,12 +12,14 @@ This folder stores **generated** and **config** files for documentation translat
 `glossary.<lang>.json` is an array of entries:
 
 ```json
-{
-  "source": "troubleshooting",
-  "target": "故障排除",
-  "ignore_case": true,
-  "whole_word": false
-}
+[
+  {
+    "source": "troubleshooting",
+    "target": "故障排除",
+    "ignore_case": true,
+    "whole_word": false
+  }
+]
 ```
 
 Fields:
