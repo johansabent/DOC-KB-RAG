@@ -13,6 +13,8 @@ __pycache__/
 
 # Database / local state
 rag-agent/supabase/.temp/
+rag-agent/docstore.*.json
+rag-agent/models/
 .vscode/
 
 # Agent coordination framework (dev tooling, not committed)
