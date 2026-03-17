@@ -22,8 +22,6 @@ logging.basicConfig(
 # Security: Deny-list of dangerous root paths that should never be ingested.
 DENIED_ROOTS = {Path(p).resolve() for p in ["/", "C:\\", "C:\\Windows", "C:\\Users"]}
 
-DOCSTORE_PATH = Path(__file__).parent / "docstore.json"
-
 
 def _validate_docs_path(raw_path: str | None) -> Path:
     """Validate DOCS_PATH to prevent path traversal or accidental system ingestion."""
@@ -44,11 +42,15 @@ def _validate_docs_path(raw_path: str | None) -> Path:
     return resolved
 
 
-def _load_docstore() -> SimpleDocumentStore:
-    if DOCSTORE_PATH.exists():
-        log.info("Loading existing docstore from %s ...", DOCSTORE_PATH)
-        return SimpleDocumentStore.from_persist_path(str(DOCSTORE_PATH))
-    log.info("No existing docstore found — starting fresh.")
+def _load_docstore(path: Path) -> SimpleDocumentStore:
+    if path.exists():
+        try:
+            log.info("Loading existing docstore from %s ...", path)
+            return SimpleDocumentStore.from_persist_path(str(path))
+        except Exception:
+            log.warning("Docstore at %s is corrupted — starting fresh.", path)
+    else:
+        log.info("No existing docstore found — starting fresh.")
     return SimpleDocumentStore()
 
 
@@ -67,6 +69,10 @@ def ingest():
     batch_size = int(os.getenv("EMBED_BATCH_SIZE", "100"))
     chunk_size = int(os.getenv("CHUNK_SIZE", "512"))
     chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "64"))
+
+    # Scope the docstore cache to the collection so that switching collections
+    # (or recreating a collection) always starts with a clean state.
+    docstore_path = Path(__file__).parent / f"docstore.{collection_name}.json"
 
     Settings.embed_batch_size = batch_size
 
@@ -91,8 +97,10 @@ def ingest():
     documents = reader.load_data()
     log.info("Loaded %d document sections.", len(documents))
 
-    docstore = _load_docstore()
+    docstore = _load_docstore(docstore_path)
 
+    # MarkdownNodeParser splits .md/.mdx on headers; for .json files (no # headers)
+    # it produces a single text node, which SentenceSplitter then chunks normally.
     pipeline = IngestionPipeline(
         transformations=[
             MarkdownNodeParser(),
@@ -111,10 +119,17 @@ def ingest():
 
     try:
         nodes = pipeline.run(documents=documents, show_progress=True)
-        docstore.persist(str(DOCSTORE_PATH))
-        log.info("Ingestion complete. %d new/changed node(s) embedded.", len(nodes))
     except Exception as e:
         log.exception("Ingestion failed: %s", e)
+        return
+
+    try:
+        docstore.persist(str(docstore_path))
+    except Exception as e:
+        log.exception("Failed to persist docstore to %s: %s", docstore_path, e)
+        return
+
+    log.info("Ingestion complete. %d new/changed node(s) embedded.", len(nodes))
 
 
 if __name__ == "__main__":
