@@ -14,3 +14,14 @@ __pycache__/
 # Database / local state
 rag-agent/supabase/.temp/
 .vscode/
+
+# Agent coordination framework (dev tooling, not committed)
+.agent/
+
+# Cache directories
+.mypy_cache/
+.ruff_cache/
+.qodo/
+
+# Temporary generated files
+/pr_comments.json
