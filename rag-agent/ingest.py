@@ -1,19 +1,21 @@
 import os
-import time
+import logging
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 from llama_index.core import SimpleDirectoryReader, StorageContext, VectorStoreIndex, Settings
 from llama_index.core.node_parser import SentenceSplitter
-from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 from llama_index.vector_stores.supabase import SupabaseVectorStore
-import logging
-import sys
-
-# Configure logging
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
 load_dotenv()
+
+log = logging.getLogger(__name__)
+logging.basicConfig(
+    stream=sys.stdout,
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 # Security: Deny-list of dangerous root paths that should never be ingested.
 DENIED_ROOTS = {Path(p).resolve() for p in ["/", "C:\\", "C:\\Windows", "C:\\Users"]}
@@ -44,56 +46,60 @@ def ingest():
     docs_path = _validate_docs_path(os.getenv("DOCS_PATH"))
 
     if not api_key or api_key == "YOUR_API_KEY_HERE":
-        print("Error: GOOGLE_API_KEY not set in .env")
+        log.error("GOOGLE_API_KEY not set in .env")
         return
 
-    # Use the cutting-edge 2-preview model
-    EMBED_MODEL_NAME = "models/gemini-embedding-2-preview"
-    DIMENSIONS = 3072
+    embed_model_name = os.getenv("EMBED_MODEL", "models/gemini-embedding-2-preview")
+    dimensions = int(os.getenv("EMBED_DIMENSIONS", "3072"))
+    collection_name = os.getenv("COLLECTION_NAME", "openclaw_docs")
+    batch_size = int(os.getenv("EMBED_BATCH_SIZE", "100"))
+    chunk_size = int(os.getenv("CHUNK_SIZE", "512"))
+    chunk_overlap = int(os.getenv("CHUNK_OVERLAP", "64"))
 
-    # Global settings for performance (Paid Tier)
-    Settings.embed_batch_size = 100 # Batching is much faster
-    
-    # Initialize Google GenAI Embedding Model
+    Settings.embed_batch_size = batch_size
+
     embed_model = GoogleGenAIEmbedding(
-        model_name=EMBED_MODEL_NAME, 
+        model_name=embed_model_name,
         api_key=api_key,
-        output_dimensionality=DIMENSIONS
+        output_dimensionality=dimensions,
     )
-    
-    # Initialize Vector Store with high-res dimensions
+
     vector_store = SupabaseVectorStore(
         postgres_connection_string=db_connection,
-        collection_name="openclaw_docs",
-        dimension=DIMENSIONS,
+        collection_name=collection_name,
+        dimension=dimensions,
     )
-    
+
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
-    
-    # Load Documents
-    print(f"Loading documents from {docs_path}...")
+
+    log.info("Loading documents from %s ...", docs_path)
     reader = SimpleDirectoryReader(
         input_dir=str(docs_path),
         recursive=True,
-        required_exts=[".md", ".json"],
+        required_exts=[".md", ".mdx", ".json"],
     )
     documents = reader.load_data()
-    print(f"Loaded {len(documents)} document sections.")
-    
-    # Create Index (Automatic chunking and embedding)
-    print(f"Generating embeddings using {EMBED_MODEL_NAME}...")
-    print("This will be fast since you are on the paid tier!")
-    
+    log.info("Loaded %d document sections.", len(documents))
+
+    splitter = SentenceSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    log.info(
+        "Generating embeddings using %s (chunk_size=%d, overlap=%d) ...",
+        embed_model_name, chunk_size, chunk_overlap,
+    )
+
     try:
-        index = VectorStoreIndex.from_documents(
+        VectorStoreIndex.from_documents(
             documents,
+            transformations=[splitter],
             storage_context=storage_context,
             embed_model=embed_model,
-            show_progress=True
+            show_progress=True,
         )
-        print("\n✅ Ingestion complete! Everything is indexed in Supabase.")
+        log.info("Ingestion complete. Everything is indexed in Supabase.")
     except Exception as e:
-        print(f"\n❌ An error occurred: {e}")
+        log.exception("Ingestion failed: %s", e)
+
 
 if __name__ == "__main__":
     ingest()

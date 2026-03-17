@@ -1,13 +1,23 @@
 import os
+import logging
+import sys
 import argparse
 from dotenv import load_dotenv
 from llama_index.core import VectorStoreIndex, StorageContext, Settings
 from llama_index.core.prompts import PromptTemplate
+from llama_index.core.postprocessor import SimilarityPostprocessor
 from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 from llama_index.vector_stores.supabase import SupabaseVectorStore
 
 load_dotenv()
+
+log = logging.getLogger(__name__)
+logging.basicConfig(
+    stream=sys.stdout,
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 # Security: Restrictive prompt template to prevent prompt injection.
 # The LLM is constrained to answer ONLY from the retrieved context.
@@ -25,54 +35,71 @@ RAG_PROMPT_TEMPLATE = PromptTemplate(
     "Answer: "
 )
 
+
 def query(question):
     api_key = os.getenv("GOOGLE_API_KEY")
     db_connection = os.getenv("DB_CONNECTION_STRING")
 
     if not api_key or api_key == "YOUR_API_KEY_HERE":
-        print("Error: GOOGLE_API_KEY not set in .env")
+        log.error("GOOGLE_API_KEY not set in .env")
         return
 
-    # Configuration matches ingestion
-    EMBED_MODEL_NAME = "models/gemini-embedding-2-preview"
-    DIMENSIONS = 3072
+    embed_model_name = os.getenv("EMBED_MODEL", "models/gemini-embedding-2-preview")
+    llm_model = os.getenv("LLM_MODEL", "models/gemini-3.1-flash-lite-preview")
+    dimensions = int(os.getenv("EMBED_DIMENSIONS", "3072"))
+    collection_name = os.getenv("COLLECTION_NAME", "openclaw_docs")
+    top_k = int(os.getenv("SIMILARITY_TOP_K", "5"))
+    similarity_cutoff = float(os.getenv("SIMILARITY_CUTOFF", "0.65"))
 
-    # Initialize Gemini LLM and Embedding Model
-    llm = GoogleGenAI(api_key=api_key, model="models/gemini-3.1-flash-lite-preview")
+    llm = GoogleGenAI(api_key=api_key, model=llm_model)
     embed_model = GoogleGenAIEmbedding(
-        model_name=EMBED_MODEL_NAME, 
+        model_name=embed_model_name,
         api_key=api_key,
-        output_dimensionality=DIMENSIONS
+        output_dimensionality=dimensions,
     )
-    
-    # Initialize Vector Store
+
     vector_store = SupabaseVectorStore(
         postgres_connection_string=db_connection,
-        collection_name="openclaw_docs",
-        dimension=DIMENSIONS,
+        collection_name=collection_name,
+        dimension=dimensions,
     )
-    
-    # Load the index from the vector store
+
     index = VectorStoreIndex.from_vector_store(
         vector_store,
         embed_model=embed_model,
     )
-    
-    # Query the index with a sandboxed prompt template
+
     query_engine = index.as_query_engine(
         llm=llm,
+        similarity_top_k=top_k,
         text_qa_template=RAG_PROMPT_TEMPLATE,
+        node_postprocessors=[SimilarityPostprocessor(similarity_cutoff=similarity_cutoff)],
     )
-    print(f"\nQuestion: {question}")
-    print("Searching high-resolution vector space...")
-    response = query_engine.query(question)
-    
-    print("\nAnswer:")
-    print(response)
+
+    log.info("Question: %s", question)
+    log.debug("Searching vector store (top_k=%d, cutoff=%.2f) ...", top_k, similarity_cutoff)
+
+    try:
+        response = query_engine.query(question)
+    except Exception as e:
+        log.exception("Query failed: %s", e)
+        return
+
+    print(f"\nAnswer:\n{response}")
+
+    if response.source_nodes:
+        print("\nSources:")
+        for node in response.source_nodes:
+            fname = node.metadata.get("file_name", "unknown")
+            score = f"{node.score:.3f}" if node.score is not None else "n/a"
+            print(f"  [{score}] {fname}")
+    else:
+        log.debug("No source nodes returned (all below similarity cutoff).")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Query the Openclaw Gateway RAG system.")
     parser.add_argument("question", type=str, help="The question you want to ask the docs.")
     args = parser.parse_args()
-    
+
     query(args.question)
