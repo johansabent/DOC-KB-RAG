@@ -40,13 +40,7 @@ async def query_docs(question: str) -> str:
     parts = [result.answer]
     if result.sources:
         parts.append("\nSources:")
-        for src in result.sources:
-            score = f"{src['score']:.4f}"
-            if "rerank_score" in src:
-                rerank = f"{src['rerank_score']:.4f}"
-                parts.append(f"  [RRF {score} | rerank {rerank}] {src['file_name']}")
-            else:
-                parts.append(f"  [{score}] {src['file_name']}")
+        parts.extend(result.format_sources())
 
     return "\n".join(parts)
 

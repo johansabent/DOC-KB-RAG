@@ -22,6 +22,18 @@ class QueryResult:
     sources: list[dict] = field(default_factory=list)  # [{file_name, score, rerank_score?}, ...]
     error: str | None = None
 
+    def format_sources(self) -> list[str]:
+        """Return formatted source attribution lines."""
+        lines = []
+        for src in self.sources:
+            score = f"{src['score']:.4f}"
+            if "rerank_score" in src:
+                rerank = f"{src['rerank_score']:.4f}"
+                lines.append(f"  [RRF {score} | rerank {rerank}] {src['file_name']}")
+            else:
+                lines.append(f"  [{score}] {src['file_name']}")
+        return lines
+
 
 # Module-level connection pool — created once, reused across queries.
 # Lazily initialized by _get_pool(). Used by both CLI and MCP server.
@@ -136,7 +148,8 @@ async def retrieve_and_answer(question: str) -> QueryResult:
             for i, row in enumerate(rows) if row["content"]
         ]
         rerank_request = RerankRequest(query=question, passages=passages)
-        reranked = ranker.rerank(rerank_request)[:rerank_top_n]
+        reranked_all = await asyncio.to_thread(ranker.rerank, rerank_request)
+        reranked = reranked_all[:rerank_top_n]
         rows = [r["meta"]["db_row"] for r in reranked]
         rerank_scores = [r["score"] for r in reranked]
         reranked_flag = True
@@ -185,13 +198,8 @@ async def query(question: str) -> None:
 
     if result.sources:
         print("\nSources:")
-        for src in result.sources:
-            score = f"{src['score']:.4f}"
-            if "rerank_score" in src:
-                rerank = f"{src['rerank_score']:.4f}"
-                print(f"  [RRF {score} | rerank {rerank}] {src['file_name']}")
-            else:
-                print(f"  [{score}] {src['file_name']}")
+        for line in result.format_sources():
+            print(line)
 
 
 if __name__ == "__main__":
