@@ -4,6 +4,8 @@ import logging
 import sys
 import argparse
 import asyncio
+from dataclasses import dataclass, field
+
 import asyncpg
 from dotenv import load_dotenv
 from llama_index.llms.google_genai import GoogleGenAI
@@ -12,15 +14,33 @@ from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 load_dotenv()
 
 log = logging.getLogger(__name__)
-logging.basicConfig(
-    stream=sys.stdout,
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+
+
+@dataclass
+class QueryResult:
+    answer: str
+    sources: list[dict] = field(default_factory=list)  # [{file_name, score, rerank_score?}, ...]
+    error: str | None = None
+
+    def format_sources(self) -> list[str]:
+        """Return formatted source attribution lines."""
+        lines = []
+        for src in self.sources:
+            score = f"{src['score']:.4f}"
+            if "rerank_score" in src:
+                rerank = f"{src['rerank_score']:.4f}"
+                lines.append(f"  [RRF {score} | rerank {rerank}] {src['file_name']}")
+            else:
+                lines.append(f"  [{score}] {src['file_name']}")
+        return lines
+
 
 # Module-level connection pool — created once, reused across queries.
-# Lazily initialized by _get_pool(). Carries forward to Phase 4 MCP server.
+# Lazily initialized by _get_pool(). Used by both CLI and MCP server.
 _pool: asyncpg.Pool | None = None
+
+# Module-level reranker — created once, reused across queries.
+_ranker: "Ranker | None" = None
 
 # Security: Restrictive prompt template to prevent prompt injection.
 # The LLM is constrained to answer ONLY from the retrieved context.
@@ -47,13 +67,23 @@ async def _get_pool(dsn: str) -> asyncpg.Pool:
     return _pool
 
 
-async def query(question: str) -> None:
+def _get_ranker(model_name: str) -> "Ranker":
+    """Return (and lazily create) the module-level FlashRank reranker."""
+    global _ranker
+    if _ranker is None:
+        from flashrank import Ranker
+        log.info("Loading reranker model '%s' (one-time download) ...", model_name)
+        _ranker = Ranker(model_name=model_name)
+    return _ranker
+
+
+async def retrieve_and_answer(question: str) -> QueryResult:
+    """Core RAG pipeline: embed → retrieve → (rerank) → generate → return structured result."""
     api_key = os.getenv("GOOGLE_API_KEY")
     db_connection = os.getenv("DB_CONNECTION_STRING")
 
     if not api_key or api_key == "YOUR_API_KEY_HERE":
-        log.error("GOOGLE_API_KEY not set in .env")
-        return
+        return QueryResult(answer="", error="GOOGLE_API_KEY not set in .env")
 
     embed_model_name = os.getenv("EMBED_MODEL", "models/gemini-embedding-2-preview")
     llm_model = os.getenv("LLM_MODEL", "models/gemini-3.1-flash-lite-preview")
@@ -87,12 +117,43 @@ async def query(question: str) -> None:
         )
     except asyncpg.PostgresError as e:
         log.exception("Hybrid search RPC failed: %s", e)
-        return
+        return QueryResult(answer="", error=f"Hybrid search RPC failed: {e}")
 
     if not rows:
         log.debug("No results returned from hybrid search.")
-        print("\nAnswer:\nI could not find an answer in the provided documentation.")
-        return
+        return QueryResult(
+            answer="I could not find an answer in the provided documentation."
+        )
+
+    # --- Optional FlashRank reranking ---
+    reranker_enabled = os.getenv("RERANKER_ENABLED", "false").lower() == "true"
+    reranked_flag = False
+
+    if reranker_enabled and rows:
+        rerank_top_n = int(os.getenv("RERANK_TOP_N", "5"))
+        reranker_model = os.getenv("RERANKER_MODEL", "ms-marco-MiniLM-L-12-v2")
+
+        if top_k <= rerank_top_n:
+            log.warning(
+                "SIMILARITY_TOP_K (%d) <= RERANK_TOP_N (%d). "
+                "Set SIMILARITY_TOP_K=20 for better reranking.",
+                top_k, rerank_top_n,
+            )
+
+        from flashrank import RerankRequest
+
+        ranker = _get_ranker(reranker_model)
+        passages = [
+            {"id": i, "text": row["content"], "meta": {"db_row": row}}
+            for i, row in enumerate(rows) if row["content"]
+        ]
+        rerank_request = RerankRequest(query=question, passages=passages)
+        reranked_all = await asyncio.to_thread(ranker.rerank, rerank_request)
+        reranked = reranked_all[:rerank_top_n]
+        rows = [r["meta"]["db_row"] for r in reranked]
+        rerank_scores = [r["score"] for r in reranked]
+        reranked_flag = True
+        log.debug("Reranked %d -> %d candidates", len(passages), len(reranked))
 
     # --- Build context from retrieved chunks ---
     context_str = "\n\n---\n\n".join(row["content"] for row in rows)
@@ -106,22 +167,48 @@ async def query(question: str) -> None:
         response = await llm.acomplete(prompt)
     except Exception as e:
         log.exception("LLM call failed: %s", e)
-        return
+        return QueryResult(answer="", error=f"LLM call failed: {e}")
 
-    print(f"\nAnswer:\n{response.text}")
-
-    # --- Source attribution ---
-    print("\nSources:")
-    for row in rows:
+    # --- Build source list ---
+    sources = []
+    for idx, row in enumerate(rows):
         meta = row["metadata"]
         if isinstance(meta, str):
             meta = json.loads(meta)
-        fname = meta.get("file_name", "unknown")
-        score = f"{row['score']:.4f}"
-        print(f"  [{score}] {fname}")
+        source = {
+            "file_name": meta.get("file_name", "unknown"),
+            "score": float(row["score"]),
+        }
+        if reranked_flag:
+            source["rerank_score"] = float(rerank_scores[idx])
+        sources.append(source)
+
+    return QueryResult(answer=response.text, sources=sources)
+
+
+async def query(question: str) -> None:
+    """CLI wrapper: call retrieve_and_answer() and print output."""
+    result = await retrieve_and_answer(question)
+
+    if result.error:
+        log.error(result.error)
+        return
+
+    print(f"\nAnswer:\n{result.answer}")
+
+    if result.sources:
+        print("\nSources:")
+        for line in result.format_sources():
+            print(line)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        stream=sys.stdout,
+        level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
     parser = argparse.ArgumentParser(
         description="Query the documentation RAG system."
     )

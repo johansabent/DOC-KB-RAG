@@ -10,6 +10,12 @@ asyncpg>=0.29.0
 # Environment
 python-dotenv>=1.0.0
 
+# Cross-encoder reranking (Phase 4)
+flashrank>=0.2.0
+
+# MCP server (Phase 4)
+mcp>=1.0.0
+
 # Helper tools (rag-agent/tools/)
 google-generativeai>=0.8.0
 google-genai>=1.0.0

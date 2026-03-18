@@ -28,4 +28,4 @@ jobs:
     - name: Run syntax check
       run: |
         cd rag-agent
-        python -m py_compile ingest.py query.py
+        python -m py_compile ingest.py query.py mcp_server.py
