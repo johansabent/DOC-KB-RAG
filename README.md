@@ -86,6 +86,19 @@ source venv/Scripts/activate
 npx supabase start
 ```
 
+### 4. Run database migrations
+
+After the first ingestion, run the SQL migrations once:
+
+```bash
+psql postgresql://postgres:postgres@127.0.0.1:54322/postgres \
+  -f migrations/001_hnsw_index.sql \
+  -f migrations/002_pg_trgm.sql \
+  -f migrations/003_hybrid_search_rrf.sql
+```
+
+See `migrations/README.md` for details.
+
 ## Configuration
 
 Set these values in `rag-agent/.env`:
