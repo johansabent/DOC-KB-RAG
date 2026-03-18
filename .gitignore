@@ -27,3 +27,9 @@ rag-agent/models/
 
 # Temporary generated files
 /pr_comments.json
+
+# Claude Code local session state (user-specific)
+.claude/
+
+# Root-level personal utility scripts (not part of RAG)
+/tools/
