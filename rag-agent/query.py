@@ -69,7 +69,7 @@ async def query(question: str) -> None:
 
     log.info("Question: %s", question)
     log.debug("Generating query embedding ...")
-    query_embedding = embed_model.get_query_embedding(question)
+    query_embedding = await embed_model.aget_query_embedding(question)
 
     # --- Hybrid retrieval via DB-native RPC ---
     pool = await _get_pool(db_connection)
@@ -103,7 +103,7 @@ async def query(question: str) -> None:
 
     log.debug("Calling LLM for answer generation ...")
     try:
-        response = llm.complete(prompt)
+        response = await llm.acomplete(prompt)
     except Exception as e:
         log.exception("LLM call failed: %s", e)
         return

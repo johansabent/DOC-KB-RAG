@@ -8,6 +8,10 @@
 -- NOTE: If you changed COLLECTION_NAME in .env from the default "openclaw_docs",
 -- replace every occurrence of "openclaw_docs" in this file with your collection name.
 --
+-- Schema note: The vecs library stores node text inside metadata->'_node_content'
+-- (a serialized JSON string).  The text is extracted via:
+--   (metadata->>'_node_content')::jsonb->>'text'
+--
 -- Parameters:
 --   query_text       — raw user question (for full-text search via websearch_to_tsquery)
 --   query_embedding  — dense embedding vector from Gemini (3072 dims)
@@ -44,21 +48,21 @@ AS $$
     ),
 
     -- 2. Full-text search: BM25-style ranking via tsvector/tsquery
-    --    Computed on-the-fly from metadata->>'text' (no stored tsvector column
-    --    because we do not own the vecs-managed schema).
+    --    Text is extracted from the serialized _node_content JSON inside metadata.
+    --    Computed on-the-fly (no stored tsvector column — we do not own the vecs schema).
     fulltext AS (
         SELECT
             f.id,
             ROW_NUMBER() OVER (
                 ORDER BY ts_rank_cd(
-                    to_tsvector('english', f.metadata ->> 'text'),
+                    to_tsvector('english', (f.metadata ->> '_node_content')::jsonb ->> 'text'),
                     websearch_to_tsquery('english', query_text)
                 ) DESC
             ) AS rank_ix
         FROM vecs.openclaw_docs f
         WHERE
-            f.metadata ->> 'text' IS NOT NULL
-            AND to_tsvector('english', f.metadata ->> 'text')
+            f.metadata ->> '_node_content' IS NOT NULL
+            AND to_tsvector('english', (f.metadata ->> '_node_content')::jsonb ->> 'text')
                 @@ websearch_to_tsquery('english', query_text)
         LIMIT (match_count * 2)
     ),
@@ -76,11 +80,11 @@ AS $$
         LIMIT match_count
     )
 
-    -- 4. Re-join to fetch content and lightweight metadata (strip bulky fields).
+    -- 4. Re-join to fetch content and lightweight metadata (strip _node_content).
     SELECT
         fused.id,
-        doc.metadata ->> 'text'                      AS content,
-        doc.metadata - 'text' - '_node_content'       AS metadata,
+        (doc.metadata ->> '_node_content')::jsonb ->> 'text' AS content,
+        doc.metadata - '_node_content'                        AS metadata,
         fused.score
     FROM fused
     JOIN vecs.openclaw_docs doc ON doc.id = fused.id
