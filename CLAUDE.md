@@ -57,11 +57,12 @@ python tools/check_dim.py         # Check embedding dimensions
 `Docs (.md/.mdx/.json)` → `SimpleDirectoryReader` → `MarkdownNodeParser` (header-aware splits) → `SentenceSplitter` (512 tokens, 64 overlap) → `GoogleGenAIEmbedding` (3072 dims) → `SupabaseVectorStore` + `docstore.json` (SHA-256 dedup cache)
 
 **Query:**
-`Question` → `GoogleGenAIEmbedding` → `asyncpg` RPC `hybrid_search_rrf()` (dense cosine + BM25 full-text fused via RRF, top_k=5) → `RAG_PROMPT_TEMPLATE` → `GoogleGenAI LLM` → Answer + source attribution with RRF scores
+`Question` → `GoogleGenAIEmbedding` → `asyncpg` RPC `hybrid_search_rrf()` (dense cosine + BM25 full-text fused via RRF, top_k=5) → *(optional)* FlashRank cross-encoder reranking → `RAG_PROMPT_TEMPLATE` → `GoogleGenAI LLM` → Answer + source attribution with RRF scores (+ rerank scores when enabled)
 
 ### Key Files
 - `rag-agent/ingest.py` — Full ingestion pipeline with path validation and dedup
-- `rag-agent/query.py` — Query engine with prompt injection protection and source attribution
+- `rag-agent/query.py` — Query engine with prompt injection protection, optional FlashRank reranking, and source attribution
+- `rag-agent/mcp_server.py` — MCP server (stdio transport) exposing `query_docs` tool
 - `rag-agent/.env` — Secrets/config (gitignored; copy from `.env.example`)
 - `rag-agent/migrations/001_hnsw_index.sql` — HNSW cosine index (m=16, ef_construction=64)
 - `rag-agent/migrations/003_hybrid_search_rrf.sql` — DB-native hybrid search RPC (RRF fusion)
@@ -79,6 +80,9 @@ python tools/check_dim.py         # Check embedding dimensions
 | `COLLECTION_NAME` | `openclaw_docs` | pgvector collection (`vecs.<name>`) |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `512` / `64` | SentenceSplitter params |
 | `SIMILARITY_TOP_K` | `5` | Number of results from hybrid search RPC |
+| `RERANKER_ENABLED` | `false` | Enable FlashRank cross-encoder reranking |
+| `RERANK_TOP_N` | `5` | Number of results to keep after reranking |
+| `RERANKER_MODEL` | `ms-marco-MiniLM-L-12-v2` | FlashRank model name |
 
 ## Development Rules
 
@@ -95,7 +99,7 @@ python tools/check_dim.py         # Check embedding dimensions
 - **Phase 1** (done): Foundation — MarkdownNodeParser chunking, top-k tuning, source attribution, config centralization
 - **Phase 2** (done): Incremental ingestion — `IngestionPipeline` + SHA-256 dedup via `docstore.json`
 - **Phase 3** (done): Hybrid search — BM25 + dense vector RRF via Postgres RPC (`hybrid_search_rrf`)
-- **Phase 4** (planned): MCP server + FlashRank reranking + mimalloc allocator (WSL2 deployment)
+- **Phase 4** (done): MCP server + FlashRank reranking + mimalloc allocator (WSL2 deployment)
 
 ## Agent Framework
 

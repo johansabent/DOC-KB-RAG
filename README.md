@@ -32,6 +32,7 @@ DOC-KB-RAG/
     |-- .env                 # Local secrets/config (gitignored)
     |-- ingest.py            # Ingest docs into the vector store
     |-- query.py             # Query the indexed docs
+    |-- mcp_server.py        # MCP server (stdio transport)
     |-- tools/               # One-off helper scripts
     |   |-- README.md
     |   |-- check_dim.py
@@ -154,6 +155,99 @@ If the corpus changes, rerun:
 python ingest.py
 ```
 
+## Reranking
+
+FlashRank cross-encoder reranking can optionally re-score the hybrid search
+results for better precision. Enable it by setting these env vars in `.env`:
+
+```env
+RERANKER_ENABLED=true
+RERANK_TOP_N=5
+RERANKER_MODEL=ms-marco-MiniLM-L-12-v2
+SIMILARITY_TOP_K=20          # over-fetch so the reranker has candidates to prune
+```
+
+The reranker model (~34 MB) is downloaded automatically on first use.
+
+When reranking is active, source attribution shows both RRF and rerank scores.
+
+## MCP Server
+
+`mcp_server.py` exposes the RAG pipeline as a single `query_docs` tool over
+MCP stdio transport, so external agents (Claude Desktop, VS Code, etc.) can
+query the knowledge base.
+
+Start it manually:
+
+```bash
+cd rag-agent
+python mcp_server.py
+```
+
+### Claude Desktop / VS Code configuration
+
+Add to your MCP client config (e.g. `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "doc-kb-rag": {
+      "command": "python",
+      "args": ["mcp_server.py"],
+      "cwd": "/path/to/DOC-KB-RAG/rag-agent"
+    }
+  }
+}
+```
+
+On WSL2, use the full path to the Python binary inside the virtual environment:
+
+```json
+{
+  "mcpServers": {
+    "doc-kb-rag": {
+      "command": "/path/to/DOC-KB-RAG/rag-agent/venv/bin/python",
+      "args": ["mcp_server.py"],
+      "cwd": "/path/to/DOC-KB-RAG/rag-agent"
+    }
+  }
+}
+```
+
+## WSL2 Deployment with mimalloc
+
+On WSL2 (Ubuntu), using mimalloc as the system allocator can reduce memory
+fragmentation for long-running processes like the MCP server.
+
+Install:
+
+```bash
+sudo apt install libmimalloc2.0
+```
+
+Run the MCP server with mimalloc:
+
+```bash
+LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libmimalloc.so.2.0 python mcp_server.py
+```
+
+For MCP client configs on WSL2, set the env var in the config:
+
+```json
+{
+  "mcpServers": {
+    "doc-kb-rag": {
+      "command": "/path/to/DOC-KB-RAG/rag-agent/venv/bin/python",
+      "args": ["mcp_server.py"],
+      "cwd": "/path/to/DOC-KB-RAG/rag-agent",
+      "env": {
+        "LD_PRELOAD": "/usr/lib/x86_64-linux-gnu/libmimalloc.so.2.0"
+      }
+    }
+  }
+}
+```
+
 ## Notes
 
 - Keep `ingest.py` and `query.py` at the top of `rag-agent/`; CI and local
@@ -167,5 +261,4 @@ python ingest.py
 - The collection name `openclaw_docs` is hardcoded in the SQL migrations; update
   manually if you change `COLLECTION_NAME`.
 - `hybrid_search_rrf()` computes `tsvector` on-the-fly; no stored/indexed
-  tsvector column (planned optimisation for Phase 4).
-- No reranking stage — planned for Phase 4 (FlashRank cross-encoder).
+  tsvector column (planned optimisation).
