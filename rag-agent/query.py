@@ -1,14 +1,13 @@
 import os
+import json
 import logging
 import sys
 import argparse
+import asyncio
+import asyncpg
 from dotenv import load_dotenv
-from llama_index.core import VectorStoreIndex, StorageContext, Settings
-from llama_index.core.prompts import PromptTemplate
-from llama_index.core.postprocessor import SimilarityPostprocessor
 from llama_index.llms.google_genai import GoogleGenAI
 from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
-from llama_index.vector_stores.supabase import SupabaseVectorStore
 
 load_dotenv()
 
@@ -19,9 +18,13 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
+# Module-level connection pool — created once, reused across queries.
+# Lazily initialized by _get_pool(). Carries forward to Phase 4 MCP server.
+_pool: asyncpg.Pool | None = None
+
 # Security: Restrictive prompt template to prevent prompt injection.
 # The LLM is constrained to answer ONLY from the retrieved context.
-RAG_PROMPT_TEMPLATE = PromptTemplate(
+RAG_PROMPT_TEMPLATE = (
     "You are a documentation assistant. Your ONLY source of truth is the "
     "context provided below. Do NOT use prior knowledge.\n"
     "If the context does not contain enough information to answer the "
@@ -36,7 +39,15 @@ RAG_PROMPT_TEMPLATE = PromptTemplate(
 )
 
 
-def query(question):
+async def _get_pool(dsn: str) -> asyncpg.Pool:
+    """Return (and lazily create) the module-level asyncpg connection pool."""
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+    return _pool
+
+
+async def query(question: str) -> None:
     api_key = os.getenv("GOOGLE_API_KEY")
     db_connection = os.getenv("DB_CONNECTION_STRING")
 
@@ -47,59 +58,76 @@ def query(question):
     embed_model_name = os.getenv("EMBED_MODEL", "models/gemini-embedding-2-preview")
     llm_model = os.getenv("LLM_MODEL", "models/gemini-3.1-flash-lite-preview")
     dimensions = int(os.getenv("EMBED_DIMENSIONS", "3072"))
-    collection_name = os.getenv("COLLECTION_NAME", "openclaw_docs")
     top_k = int(os.getenv("SIMILARITY_TOP_K", "5"))
-    similarity_cutoff = float(os.getenv("SIMILARITY_CUTOFF", "0.65"))
 
-    llm = GoogleGenAI(api_key=api_key, model=llm_model)
+    # --- Embedding ---
     embed_model = GoogleGenAIEmbedding(
         model_name=embed_model_name,
         api_key=api_key,
         output_dimensionality=dimensions,
     )
 
-    vector_store = SupabaseVectorStore(
-        postgres_connection_string=db_connection,
-        collection_name=collection_name,
-        dimension=dimensions,
-    )
-
-    index = VectorStoreIndex.from_vector_store(
-        vector_store,
-        embed_model=embed_model,
-    )
-
-    query_engine = index.as_query_engine(
-        llm=llm,
-        similarity_top_k=top_k,
-        text_qa_template=RAG_PROMPT_TEMPLATE,
-        node_postprocessors=[SimilarityPostprocessor(similarity_cutoff=similarity_cutoff)],
-    )
-
     log.info("Question: %s", question)
-    log.debug("Searching vector store (top_k=%d, cutoff=%.2f) ...", top_k, similarity_cutoff)
+    log.debug("Generating query embedding ...")
+    query_embedding = await embed_model.aget_query_embedding(question)
+
+    # --- Hybrid retrieval via DB-native RPC ---
+    pool = await _get_pool(db_connection)
+
+    embedding_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
+    log.debug("Calling hybrid_search_rrf (match_count=%d) ...", top_k)
 
     try:
-        response = query_engine.query(question)
-    except Exception as e:
-        log.exception("Query failed: %s", e)
+        rows = await pool.fetch(
+            "SELECT id, content, metadata, score "
+            "FROM hybrid_search_rrf($1, $2::vector(3072), $3)",
+            question,
+            embedding_str,
+            top_k,
+        )
+    except asyncpg.PostgresError as e:
+        log.exception("Hybrid search RPC failed: %s", e)
         return
 
-    print(f"\nAnswer:\n{response}")
+    if not rows:
+        log.debug("No results returned from hybrid search.")
+        print("\nAnswer:\nI could not find an answer in the provided documentation.")
+        return
 
-    if response.source_nodes:
-        print("\nSources:")
-        for node in response.source_nodes:
-            fname = node.metadata.get("file_name", "unknown")
-            score = f"{node.score:.3f}" if node.score is not None else "n/a"
-            print(f"  [{score}] {fname}")
-    else:
-        log.debug("No source nodes returned (all below similarity cutoff).")
+    # --- Build context from retrieved chunks ---
+    context_str = "\n\n---\n\n".join(row["content"] for row in rows)
+
+    # --- LLM generation ---
+    llm = GoogleGenAI(api_key=api_key, model=llm_model)
+    prompt = RAG_PROMPT_TEMPLATE.format(context_str=context_str, query_str=question)
+
+    log.debug("Calling LLM for answer generation ...")
+    try:
+        response = await llm.acomplete(prompt)
+    except Exception as e:
+        log.exception("LLM call failed: %s", e)
+        return
+
+    print(f"\nAnswer:\n{response.text}")
+
+    # --- Source attribution ---
+    print("\nSources:")
+    for row in rows:
+        meta = row["metadata"]
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        fname = meta.get("file_name", "unknown")
+        score = f"{row['score']:.4f}"
+        print(f"  [{score}] {fname}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Query the Openclaw Gateway RAG system.")
-    parser.add_argument("question", type=str, help="The question you want to ask the docs.")
+    parser = argparse.ArgumentParser(
+        description="Query the documentation RAG system."
+    )
+    parser.add_argument(
+        "question", type=str, help="The question you want to ask the docs."
+    )
     args = parser.parse_args()
 
-    query(args.question)
+    asyncio.run(query(args.question))

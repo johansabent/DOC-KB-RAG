@@ -10,8 +10,7 @@ documentation corpus in one place.
 - `docs/` is the documentation corpus currently being indexed.
 - `.agent/` provides agent personas, skills, and workflows for coordinating
   multi-agent development work. See `.agent/ARCHITECTURE.md`.
-- Root-level files such as `AGENTS.md`, `GEMINI.md`, and `CHANGELOG.md` are
-  project guidance and imported reference material.
+- Root-level files such as `AGENTS.md` and `GEMINI.md` are project guidance.
 
 ## Structure Map
 
@@ -19,7 +18,6 @@ documentation corpus in one place.
 DOC-KB-RAG/
 |-- .agent/                  # Agent coordination framework (see ARCHITECTURE.md)
 |-- AGENTS.md                # Local agent instructions for this repo
-|-- CHANGELOG.md             # Imported/source project changelog
 |-- GEMINI.md                # Gemini-specific project context
 |-- LICENSE
 |-- README.md
@@ -58,7 +56,15 @@ application root and contains the local `.env`, `venv`, and Supabase config.
 - Docker Desktop running
 - Node.js
 
-### 2. Activate the virtual environment
+### 2. Install Python dependencies
+
+From `rag-agent/`:
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Activate the virtual environment
 
 From `rag-agent/`:
 
@@ -80,11 +86,24 @@ source venv/Scripts/activate
 .\venv\Scripts\Activate.ps1
 ```
 
-### 3. Start local Supabase
+### 4. Start local Supabase
 
 ```bash
 npx supabase start
 ```
+
+### 5. Run database migrations
+
+After the first ingestion, run the SQL migrations once:
+
+```bash
+psql postgresql://postgres:postgres@127.0.0.1:54322/postgres \
+  -f migrations/001_hnsw_index.sql \
+  -f migrations/002_pg_trgm.sql \
+  -f migrations/003_hybrid_search_rrf.sql
+```
+
+See `migrations/README.md` for details.
 
 ## Configuration
 
@@ -141,3 +160,12 @@ python ingest.py
   usage depend on those entrypoints.
 - Avoid moving `rag-agent/venv/` or `rag-agent/supabase/` unless you are also
   rebuilding the environment and command assumptions around them.
+
+## Known Limitations (v0.1.0-beta)
+
+- CI runs syntax checks only (`py_compile`) — no automated test suite yet.
+- The collection name `openclaw_docs` is hardcoded in the SQL migrations; update
+  manually if you change `COLLECTION_NAME`.
+- `hybrid_search_rrf()` computes `tsvector` on-the-fly; no stored/indexed
+  tsvector column (planned optimisation for Phase 4).
+- No reranking stage — planned for Phase 4 (FlashRank cross-encoder).
